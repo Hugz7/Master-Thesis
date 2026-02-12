@@ -8,7 +8,7 @@ import plotly.express as px
 import pandas as pd
 import numpy as np
 import networkx as nx
-from typing import Tuple
+from typing import Dict
 
 
 def create_bar_chart(
@@ -154,7 +154,7 @@ def create_network_graph(
                     G.add_edge(asset1, asset2, weight=corr_matrix.iloc[i, j])
     
     # Layout
-    pos = nx.spring_layout(G, k=2, iterations=50)
+    pos = nx.spring_layout(G, k=2, iterations=50, seed=42)
     
     # Préparer les edges
     edge_trace = []
@@ -412,5 +412,166 @@ def create_levy_area_vs_reference_chart(
         showlegend=False,
         margin=dict(l=150, r=150)
     )
-    
+
+    return fig
+
+
+def create_levy_area_path_plot(
+    path_data: Dict[str, object],
+    template: str = "plotly_white"
+) -> go.Figure:
+    """
+    Crée un graphe paramétrique 2D de la trajectoire (X(t), Y(t))
+    visualisant géométriquement l'Aire de Lévy entre deux actifs.
+    """
+    X = path_data['X']
+    Y = path_data['Y']
+    dates = path_data['dates']
+    levy_area = path_data['levy_area']
+    asset_a = path_data['asset_a']
+    asset_b = path_data['asset_b']
+    n = len(X)
+
+    # Temps normalisé [0, 1] pour le gradient de couleur
+    t_norm = np.linspace(0, 1, n)
+
+    fig = go.Figure()
+
+    # Trace 1 : Zone ombrée (polygone origine -> courbe -> origine)
+    fillcolor = 'rgba(76, 175, 80, 0.10)' if levy_area >= 0 else 'rgba(244, 67, 54, 0.10)'
+    poly_x = [0] + list(X) + [0]
+    poly_y = [0] + list(Y) + [0]
+
+    fig.add_trace(go.Scatter(
+        x=poly_x, y=poly_y,
+        fill='toself',
+        fillcolor=fillcolor,
+        line=dict(color='rgba(0,0,0,0)'),
+        hoverinfo='skip',
+        showlegend=False,
+        name='Aire signée'
+    ))
+
+    # Trace 2 : Trajectoire paramétrique avec gradient temporel
+    fig.add_trace(go.Scatter(
+        x=X, y=Y,
+        mode='lines+markers',
+        line=dict(color='rgba(150,150,150,0.3)', width=1),
+        marker=dict(
+            size=4,
+            color=t_norm,
+            colorscale='Viridis',
+            showscale=True,
+            colorbar=dict(
+                title=dict(text="Temps", side="right"),
+                tickvals=[0, 0.25, 0.5, 0.75, 1.0],
+                ticktext=["Début", "25%", "50%", "75%", "Fin"],
+                len=0.6
+            ),
+        ),
+        customdata=np.column_stack([
+            np.arange(n),
+            [d.strftime('%Y-%m-%d') for d in dates]
+        ]),
+        hovertemplate=(
+            '<b>Jour %{customdata[0]}</b><br>'
+            f'{asset_a}: ' + '%{x:.4f}<br>'
+            f'{asset_b}: ' + '%{y:.4f}<br>'
+            'Date: %{customdata[1]}<extra></extra>'
+        ),
+        showlegend=False,
+        name='Trajectoire'
+    ))
+
+    # Trace 3 : Marqueur de début (losange vert)
+    fig.add_trace(go.Scatter(
+        x=[X[0]], y=[Y[0]],
+        mode='markers+text',
+        marker=dict(size=14, color='#4CAF50', symbol='diamond',
+                    line=dict(color='white', width=2)),
+        text=['Début'],
+        textposition='top right',
+        textfont=dict(size=11, color='#4CAF50'),
+        showlegend=False,
+        hovertemplate=f'<b>Début</b><br>{dates[0]:%Y-%m-%d}<extra></extra>'
+    ))
+
+    # Trace 4 : Marqueur de fin (carré rouge)
+    fig.add_trace(go.Scatter(
+        x=[X[-1]], y=[Y[-1]],
+        mode='markers+text',
+        marker=dict(size=14, color='#f44336', symbol='square',
+                    line=dict(color='white', width=2)),
+        text=['Fin'],
+        textposition='bottom left',
+        textfont=dict(size=11, color='#f44336'),
+        showlegend=False,
+        hovertemplate=f'<b>Fin</b><br>{dates[-1]:%Y-%m-%d}<extra></extra>'
+    ))
+
+    # Flèches directionnelles à 25%, 50%, 75%
+    for frac in [0.25, 0.5, 0.75]:
+        idx = int(frac * (n - 1))
+        if idx + 1 < n:
+            fig.add_annotation(
+                ax=X[idx], ay=Y[idx],
+                x=X[idx + 1], y=Y[idx + 1],
+                xref='x', yref='y', axref='x', ayref='y',
+                showarrow=True,
+                arrowhead=3,
+                arrowsize=1.5,
+                arrowwidth=2,
+                arrowcolor='rgba(100, 100, 100, 0.7)'
+            )
+
+    # Annotation de l'aire de Lévy
+    if levy_area >= 0:
+        direction = f"Anti-horaire ({asset_a} mène)"
+        area_color = '#4CAF50'
+    else:
+        direction = f"Horaire ({asset_b} mène)"
+        area_color = '#f44336'
+
+    fig.add_annotation(
+        text=(
+            f"<b>Aire de Lévy = {levy_area:+.4f}</b><br>"
+            f"<i>{direction}</i>"
+        ),
+        xref='paper', yref='paper',
+        x=0.02, y=0.98,
+        showarrow=False,
+        font=dict(size=14, color=area_color),
+        bgcolor='rgba(255,255,255,0.85)',
+        bordercolor=area_color,
+        borderwidth=2,
+        borderpad=8,
+        align='left'
+    )
+
+    # Layout
+    fig.update_layout(
+        template=template,
+        title={
+            'text': (
+                f"📐 Trajectoire Paramétrique : {asset_a} vs {asset_b}"
+                f"<br><sub>Aire de Lévy = {levy_area:+.4f} | "
+                f"{'Anti-horaire = A mène' if levy_area > 0 else 'Horaire = B mène'}</sub>"
+            ),
+            'x': 0.5,
+            'xanchor': 'center',
+            'font': {'size': 18}
+        },
+        xaxis_title=f"Log-return normalisé : {asset_a}",
+        yaxis_title=f"Log-return normalisé : {asset_b}",
+        height=650,
+        xaxis=dict(
+            zeroline=True, zerolinecolor='gray', zerolinewidth=1,
+            scaleanchor='y', scaleratio=1
+        ),
+        yaxis=dict(
+            zeroline=True, zerolinecolor='gray', zerolinewidth=1
+        ),
+        hovermode='closest'
+    )
+
     return fig

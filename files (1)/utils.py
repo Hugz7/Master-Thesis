@@ -5,7 +5,7 @@ Contient les fonctions de validation, téléchargement et calculs mathématiques
 
 import pandas as pd
 import numpy as np
-from typing import Tuple, Dict, List
+from typing import Any, Tuple, Dict, List
 import yfinance as yf
 
 
@@ -59,7 +59,7 @@ PERIOD_MAP = {
 # VALIDATION DES DONNÉES
 # ============================================================================
 
-def validate_data_quality(df: pd.DataFrame, name: str = "Dataset") -> Dict[str, any]:
+def validate_data_quality(df: pd.DataFrame, name: str = "Dataset") -> Dict[str, Any]:
     """
     Valide la qualité des données avec statistiques détaillées
     """
@@ -175,7 +175,7 @@ def download_all_assets_yfinance(
 def align_crypto_traditional_data(
     crypto_prices: pd.DataFrame,
     trad_prices: pd.DataFrame
-) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, any]]:
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
     """
     Aligne les données crypto (7j/7) avec les données traditionnelles (5j/7)
     en forward-fillant les prix traditionnels sur les weekends
@@ -212,7 +212,7 @@ def clean_and_merge_prices(
     crypto_prices: pd.DataFrame,
     trad_prices: pd.DataFrame,
     min_valid_pct: float = 0.65
-) -> Tuple[pd.DataFrame, Dict[str, any]]:
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
     Fusionne et nettoie les prix avec statistiques
     """
@@ -273,8 +273,8 @@ def calculate_levy_areas(prices: pd.DataFrame) -> Dict[Tuple[str, str], float]:
     
     A = (1/2) * ∫ (X dY - Y dX)
     
-    En discret :
-    A ≈ (1/2) * Σ (X_i * ΔY_i - Y_i * ΔX_i)
+    En discret (Stratonovich, midpoint) :
+    A ≈ (1/2) * Σ ((X_i + X_{i+1})/2 * ΔY_i - (Y_i + Y_{i+1})/2 * ΔX_i)
     
     Args:
         prices: DataFrame avec les prix des actifs
@@ -293,16 +293,23 @@ def calculate_levy_areas(prices: pd.DataFrame) -> Dict[Tuple[str, str], float]:
     for i, asset1 in enumerate(assets):
         for j, asset2 in enumerate(assets):
             if i < j:  # Éviter les doublons et la diagonale
-                X = log_returns[asset1].values
-                Y = log_returns[asset2].values
-                
+                # Filtrer les NaN pour cette paire
+                pair = log_returns[[asset1, asset2]].dropna()
+                if len(pair) < 10:
+                    levy_areas[(asset1, asset2)] = np.nan
+                    levy_areas[(asset2, asset1)] = np.nan
+                    continue
+
+                X = pair[asset1].values
+                Y = pair[asset2].values
+
                 # Calcul des incréments
                 dX = np.diff(X)
                 dY = np.diff(Y)
                 
-                # Valeurs au milieu de l'intervalle (pour l'intégrale de Stratonovich)
-                X_mid = X[:-1]
-                Y_mid = Y[:-1]
+                # Valeurs au milieu de l'intervalle (intégrale de Stratonovich)
+                X_mid = (X[:-1] + X[1:]) / 2.0
+                Y_mid = (Y[:-1] + Y[1:]) / 2.0
                 
                 # Aire de Lévy (formule discrète)
                 levy_area = 0.5 * np.sum(X_mid * dY - Y_mid * dX)
@@ -314,33 +321,46 @@ def calculate_levy_areas(prices: pd.DataFrame) -> Dict[Tuple[str, str], float]:
 
 
 def calculate_levy_areas_vs_reference(
-    prices: pd.DataFrame, 
+    prices: pd.DataFrame,
     reference_asset: str = None
 ) -> pd.Series:
     """
     Calcule les Aires de Lévy de tous les actifs par rapport à un actif de référence.
-    
+    Optimisé : ne calcule que les paires impliquant la référence (O(N) au lieu de O(N²)).
+
     Args:
         prices: DataFrame avec les prix
         reference_asset: Actif de référence (si None, utilise le premier)
-        
+
     Returns:
         Series avec les aires de Lévy {asset: aire}
     """
     if reference_asset is None:
         reference_asset = prices.columns[0]
-    
+
     if reference_asset not in prices.columns:
         raise ValueError(f"Actif de référence {reference_asset} introuvable")
-    
-    levy_areas = calculate_levy_areas(prices)
-    
-    # Extraire les aires par rapport à la référence
+
+    log_returns = np.log(prices / prices.iloc[0])
+
     areas_vs_ref = {}
     for asset in prices.columns:
         if asset != reference_asset:
-            areas_vs_ref[asset] = levy_areas.get((reference_asset, asset), 0)
-    
+            pair = log_returns[[reference_asset, asset]].dropna()
+            if len(pair) < 10:
+                areas_vs_ref[asset] = np.nan
+                continue
+
+            X = pair[reference_asset].values
+            Y = pair[asset].values
+
+            dX = np.diff(X)
+            dY = np.diff(Y)
+            X_mid = (X[:-1] + X[1:]) / 2.0
+            Y_mid = (Y[:-1] + Y[1:]) / 2.0
+
+            areas_vs_ref[asset] = 0.5 * np.sum(X_mid * dY - Y_mid * dX)
+
     return pd.Series(areas_vs_ref)
 
 
@@ -364,3 +384,49 @@ def calculate_levy_area_matrix(prices: pd.DataFrame) -> pd.DataFrame:
                 matrix[i, j] = levy_areas.get((asset1, asset2), 0)
     
     return pd.DataFrame(matrix, index=assets, columns=assets)
+
+
+def get_levy_path_data(
+    prices: pd.DataFrame,
+    asset_a: str,
+    asset_b: str
+) -> Dict[str, Any]:
+    """
+    Prépare les chemins normalisés et l'aire de Lévy pour une paire d'actifs.
+    Utilisé pour la visualisation paramétrique.
+
+    Args:
+        prices: DataFrame avec les prix
+        asset_a: Premier actif (axe X)
+        asset_b: Second actif (axe Y)
+
+    Returns:
+        Dictionnaire avec clés: X, Y, dates, levy_area, asset_a, asset_b
+    """
+    if asset_a not in prices.columns:
+        raise ValueError(f"Actif {asset_a} introuvable dans les données")
+    if asset_b not in prices.columns:
+        raise ValueError(f"Actif {asset_b} introuvable dans les données")
+
+    # Log-returns normalisés, filtrer NaN
+    pair_prices = prices[[asset_a, asset_b]].dropna()
+    log_returns = np.log(pair_prices / pair_prices.iloc[0])
+
+    X = log_returns[asset_a].values
+    Y = log_returns[asset_b].values
+
+    # Aire de Lévy (Stratonovich midpoint)
+    dX = np.diff(X)
+    dY = np.diff(Y)
+    X_mid = (X[:-1] + X[1:]) / 2.0
+    Y_mid = (Y[:-1] + Y[1:]) / 2.0
+    levy_area = 0.5 * np.sum(X_mid * dY - Y_mid * dX)
+
+    return {
+        'X': X,
+        'Y': Y,
+        'dates': pair_prices.index,
+        'levy_area': levy_area,
+        'asset_a': asset_a,
+        'asset_b': asset_b
+    }
