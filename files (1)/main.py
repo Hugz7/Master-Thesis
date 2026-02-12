@@ -17,13 +17,14 @@ from utils import (
     CRYPTO_PRESETS, TRADITIONAL_PRESETS, PERIOD_MAP,
     validate_data_quality, download_all_assets_yfinance,
     align_crypto_traditional_data, clean_and_merge_prices,
-    calculate_levy_areas, calculate_levy_areas_vs_reference, calculate_levy_area_matrix
+    calculate_levy_areas, calculate_levy_areas_vs_reference, calculate_levy_area_matrix,
+    get_levy_path_data
 )
 from visualizations import (
     create_bar_chart, create_top_leaders_followers_chart,
     create_network_graph, create_score_volatility_scatter,
     create_score_distribution, create_levy_area_heatmap,
-    create_levy_area_vs_reference_chart
+    create_levy_area_vs_reference_chart, create_levy_area_path_plot
 )
 from strategy import generate_trading_strategy
 
@@ -370,24 +371,24 @@ if run_analysis:
         try:
             fig_net = create_network_graph(scores, threshold, template)
             st.plotly_chart(fig_net, use_container_width=True)
-        except:
-            st.warning("Réseau non disponible")
+        except Exception as e:
+            st.warning(f"Réseau non disponible: {e}")
     
     # TAB 3: Score/Volatilité
     with tab3:
         try:
             fig_scatter = create_score_volatility_scatter(scores, template)
             st.plotly_chart(fig_scatter, use_container_width=True)
-        except:
-            st.warning("Scatter non disponible")
+        except Exception as e:
+            st.warning(f"Scatter non disponible: {e}")
     
     # TAB 4: Distribution
     with tab4:
         try:
             fig_dist = create_score_distribution(scores, template)
             st.plotly_chart(fig_dist, use_container_width=True)
-        except:
-            st.warning("Distribution non disponible")
+        except Exception as e:
+            st.warning(f"Distribution non disponible: {e}")
     
     # TAB 5: Aires de Lévy
     with tab5:
@@ -423,7 +424,64 @@ if run_analysis:
                     st.metric("Aire min", f"{levy_vs_ref.min():.3f}", levy_vs_ref.idxmin())
                 with col3:
                     st.metric("Aire moyenne", f"{levy_vs_ref.mean():.3f}")
-                
+
+                # Trajectoire Paramétrique
+                st.markdown("---")
+                st.markdown("### 📐 Trajectoire Paramétrique (Paire d'actifs)")
+                st.info("""
+                Visualisation géométrique de l'Aire de Lévy entre deux actifs.
+                La courbe trace (X(t), Y(t)) dans le plan des log-returns normalisés.
+                - **Boucle anti-horaire** : Aire positive, le premier actif mène
+                - **Boucle horaire** : Aire négative, le second actif mène
+                """)
+
+                col_sel1, col_sel2 = st.columns(2)
+                asset_list = all_prices.columns.tolist()
+
+                with col_sel1:
+                    path_asset_a = st.selectbox(
+                        "Actif A (axe X)",
+                        asset_list,
+                        index=0,
+                        key="levy_path_asset_a"
+                    )
+                with col_sel2:
+                    default_b_index = 1 if len(asset_list) > 1 else 0
+                    path_asset_b = st.selectbox(
+                        "Actif B (axe Y)",
+                        asset_list,
+                        index=default_b_index,
+                        key="levy_path_asset_b"
+                    )
+
+                if path_asset_a == path_asset_b:
+                    st.warning("Veuillez sélectionner deux actifs différents.")
+                else:
+                    with st.spinner("Génération de la trajectoire..."):
+                        path_data = get_levy_path_data(all_prices, path_asset_a, path_asset_b)
+
+                    area_val = path_data['levy_area']
+                    col_m1, col_m2, col_m3 = st.columns(3)
+                    with col_m1:
+                        leader = path_asset_a if area_val > 0 else path_asset_b
+                        st.metric(
+                            "Aire de Lévy",
+                            f"{area_val:+.4f}",
+                            delta=f"Leader: {leader}",
+                            delta_color="normal" if area_val > 0 else "inverse"
+                        )
+                    with col_m2:
+                        st.metric("Jours analysés", f"{len(path_data['X'])}")
+                    with col_m3:
+                        st.metric(
+                            "Direction",
+                            "Anti-horaire" if area_val > 0 else "Horaire",
+                            delta=f"{leader} mène"
+                        )
+
+                    fig_path = create_levy_area_path_plot(path_data, template)
+                    st.plotly_chart(fig_path, use_container_width=True)
+
             except Exception as e:
                 st.error(f"Erreur calcul Lévy: {e}")
         else:
